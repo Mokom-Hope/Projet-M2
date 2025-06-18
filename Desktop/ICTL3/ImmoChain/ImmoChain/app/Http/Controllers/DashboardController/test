@@ -1,0 +1,652 @@
+@extends('layouts.app')
+
+@section('title', 'Tableau de bord - ColiGo')
+
+@section('content')
+<div class="container mx-auto"><!--class="container mx-auto px-4 py-8"-->
+    <!-- <h1 class="text-3xl font-bold text-gray-800 mb-6">Tableau de bord</h1> -->
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <!-- Carte interactive -->
+        <div class="md:col-span-2 bg-white rounded-lg shadow-md p-0">
+            <h2 class="text-xl font-semibold mb-0"><!--Carte des missions  le mb etait a 4 donc mb-4--></h2>
+            <div id="map" class="h-96 w-full rounded-lg p-0"></div>
+        </div>
+
+        <!-- Statistiques utilisateur -->
+        <div class="bg-white rounded-lg shadow-md p-4">
+            <h2 class="text-xl font-semibold mb-4">Vos statistiques</h2>
+            <div class="space-y-4">
+                <div class="flex justify-between items-center">
+                    <span class="text-gray-600">Colis envoyés</span>
+                    <span class="text-2xl font-bold text-coligo-blue" id="sentPackages">0</span>
+                </div>
+                <div class="flex justify-between items-center">
+                    <span class="text-gray-600">Colis livrés</span>
+                    <span class="text-2xl font-bold text-coligo-blue" id="deliveredPackages">0</span>
+                </div>
+                <div class="flex justify-between items-center">
+                    <span class="text-gray-600">Note moyenne</span>
+                    <span class="text-2xl font-bold text-coligo-orange" id="averageRating">0.0</span>
+                </div>
+                <div class="flex justify-between items-center">
+                    <span class="text-gray-600">Gains totaux</span>
+                    <span class="text-2xl font-bold text-coligo-orange" id="totalEarnings">0 €</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recherche et bouton d'envoi de colis -->
+    <div class="mt-6 flex flex-col md:flex-row gap-4">
+        <div class="flex-grow">
+            <input type="text" id="searchMissions" placeholder="Rechercher une mission ou un colis" class="w-full p-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-coligo-blue focus:border-transparent">
+        </div>
+        <button id="sendPackageBtn" class="bg-coligo-orange text-white py-2 px-4 rounded-lg hover:bg-coligo-blue transition duration-300 flex-shrink-0">
+            Envoyer un colis
+        </button>
+    </div>
+
+    <!-- Missions disponibles -->
+    <div class="mt-6 bg-white rounded-lg shadow-md p-4">
+        <h2 class="text-xl font-semibold mb-4">Missions disponibles</h2>
+        <div id="availableMissions" class="space-y-4">
+            <!-- Les missions seront ajoutées dynamiquement ici -->
+        </div>
+    </div>
+
+    <!-- Activités récentes -->
+    <div class="mt-6 bg-white rounded-lg shadow-md p-4">
+        <h2 class="text-xl font-semibold mb-4">Activités récentes</h2>
+        <ul id="recentActivities" class="space-y-2">
+            <!-- Les activités seront ajoutées dynamiquement ici -->
+        </ul>
+    </div>
+</div>
+
+<!-- Modal pour l'envoi de colis -->
+<!-- Modal pour l'envoi de colis -->
+<div id="sendPackageModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full hidden">
+    <div class="relative top-20 mx-auto p-5 border w-11/12 md:w-2/3 lg:w-1/2 xl:w-1/3 shadow-lg rounded-lg bg-white">
+        <div class="mt-3">
+            <h3 class="text-lg leading-6 font-medium text-gray-900 text-center mb-4">Envoyer un colis</h3>
+
+            <div class="md:flex">
+                <div class="md:w-1/2 md:border-r md:pr-4 mb-4 md:mb-0">
+                    <h4 class="text-md font-semibold text-gray-700 mb-2">Informations du colis</h4>
+                    <form id="sendPackageForm">
+                        <input type="hidden" name="sender_id" value="">
+
+                        <label for="packageDescription" class="block text-sm font-medium text-gray-700">Description</label>
+                        <input type="text" id="packageDescription" name="description" placeholder="Ex: Téléphone portable" class="mt-1 p-2 border border-gray-300 rounded-md w-full">
+
+                        <label for="packageType" class="block text-sm font-medium text-gray-700 mt-2">Type de colis</label>
+                        <select id="packageType" name="type" class="mt-1 p-2 border border-gray-300 rounded-md w-full">
+                            <option value="fragile">Fragile</option>
+                            <option value="document">Document</option>
+                            <option value="electronique">Electronique</option>
+                            <option value="autre">Autre</option>
+                        </select>
+
+                        <label for="packageWeight" class="block text-sm font-medium text-gray-700 mt-2">Poids (kg)</label>
+                        <input type="number" id="packageWeight" name="poids" placeholder="Ex: 2.5" class="mt-1 p-2 border border-gray-300 rounded-md w-full">
+
+
+                        <div class="mt-2">
+                            <label for="packageImage" class="block text-sm font-medium text-gray-700">Image du colis</label>
+                            <div id="packageImagePreview" class="mt-1 border border-gray-300 rounded-md w-full h-64 relative overflow-hidden">
+                                <span class="absolute inset-0 flex items-center justify-center text-gray-500">Cliquez pour prendre une photo</span>
+                            </div>
+                            <input type="hidden" id="packageImage" name="imgColis">
+                            <button type="button" id="capturePackageImage" class="mt-2 w-full px-4 py-2 bg-coligo-blue text-white font-medium rounded-md shadow-sm hover:bg-coligo-orange focus:outline-none focus:ring-2 focus:ring-coligo-blue">Prendre une photo</button>
+                        </div>
+
+                        <label for="deliveryPrice" class="block text-sm font-medium text-gray-700 mt-2">Prix de livraison (FCFA)</label>
+                        <input type="number" id="deliveryPrice" name="valeur" placeholder="Ex: 1500" min="500" class="mt-1 p-2 border border-gray-300 rounded-md w-full">
+
+                        <label for="packageDepartureTime" class="block text-sm font-medium text-gray-700 mt-2">Heure de départ</label>
+                        <input type="datetime-local" id="packageDepartureTime" name="heure_depart" class="mt-1 p-2 border border-gray-300 rounded-md w-full">
+                    
+                    </div>
+
+                    <div class="md:w-1/2 md:pl-4">
+                        <h4 class="text-md font-semibold text-gray-700 mb-2">Informations du destinataire</h4>
+
+                        <label for="recipientName" class="block text-sm font-medium text-gray-700">Nom complet</label>
+                        <input type="text" id="recipientName" name="recipient_name" placeholder="Ex: Marie Durand" class="mt-1 p-2 border border-gray-300 rounded-md w-full">
+
+                        <label for="recipientPhone" class="block text-sm font-medium text-gray-700 mt-2">Numéro de téléphone</label>
+                        <input type="tel" id="recipientPhone" name="recipient_phone" placeholder="Ex: 698765432" class="mt-1 p-2 border border-gray-300 rounded-md w-full">
+
+                        <label for="recipientAddress" class="block text-sm font-medium text-gray-700 mt-2">Adresse de livraison</label>
+                        <input type="text" id="recipientAddress" name="recipient_address" placeholder="Ex: Douala, Akwa" class="mt-1 p-2 border border-gray-300 rounded-md w-full">
+
+                        <label for="recipientCity" class="block text-sm font-medium text-gray-700 mt-2">Ville</label>
+                        <input type="text" id="recipientCity" name="recipient_city" placeholder="Ex: Douala" class="mt-1 p-2 border border-gray-300 rounded-md w-full">
+                    </div>
+                </div>
+                <div class="mt-4 flex justify-center gap-4">
+                    <button type="submit" class="px-4 py-2 bg-coligo-blue text-white text-base font-medium rounded-md shadow-sm hover:bg-coligo-orange focus:outline-none focus:ring-2 focus:ring-coligo-blue">
+                        Confirmer
+                    </button>
+                    <button type="button" id="closeModalButton" class="px-4 py-2 bg-gray-300 text-gray-700 text-base font-medium rounded-md shadow-sm hover:bg-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400">
+                        Fermer
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Fonction pour fermer le modal
+    document.getElementById('closeModalButton').addEventListener('click', function() {
+        document.getElementById('sendPackageModal').classList.add('hidden');
+    });
+
+    // Empêcher l'envoi du formulaire si le prix de livraison est inférieur à 500 FCFA
+    document.getElementById('sendPackageForm').addEventListener('submit', function(e) {
+        const deliveryPrice = document.getElementById('deliveryPrice').value;
+        if (deliveryPrice < 500) {
+            e.preventDefault();
+            alert("Le prix de livraison doit être supérieur ou égal à 500 FCFA.");
+        }
+    });
+</script>
+
+
+<!-- Modal pour les détails de mission -->
+<div id="missionDetailsModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full hidden">
+    <div class="relative top-20 mx-auto p-5 border w-11/12 max-w-md shadow-lg rounded-lg bg-white">
+        <div class="mt-3 text-center">
+            <h3 class="text-lg leading-6 font-medium text-gray-900">Détails de la mission</h3>
+            <div id="missionDetails" class="mt-2 px-4 py-3">
+                <!-- Les détails de la mission seront ajoutés ici -->
+            </div>
+            <div class="mt-4 flex justify-center gap-4">
+                <button id="acceptMissionBtn" class="px-4 py-2 bg-coligo-blue text-white text-base font-medium rounded-md shadow-sm hover:bg-coligo-orange focus:outline-none focus:ring-2 focus:ring-coligo-blue">
+                    Accepter la mission
+                </button>
+                <button id="closeMissionDetailsBtn" class="px-4 py-2 bg-gray-300 text-gray-700 text-base font-medium rounded-md shadow-sm hover:bg-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400">
+                    Fermer
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@endsection
+
+@section('scripts')
+
+<script>
+    mapboxgl.accessToken = 'pk.eyJ1IjoiYXJ0aHVyLWNhZHJlbjIzNyIsImEiOiJjbTM1cjE0cGUwNW41Mmlvam56ZjRtdXQzIn0.fWB_Y31S2A3WeZvXoxjDxQ';
+    let map;
+    let userMarker;
+    let watchId;
+
+    // Fonction pour initialiser la carte avec la position de l'utilisateur
+    function initializeMap(longitude, latitude) {
+        map = new mapboxgl.Map({
+            container: 'map',
+            style: 'mapbox://styles/mapbox/streets-v11',
+            center: [longitude, latitude],
+            zoom: 13
+        });
+
+        // Ajouter un marqueur pour la position de l'utilisateur
+        userMarker = new mapboxgl.Marker({ color: '#3498db' })
+            .setLngLat([longitude, latitude])
+            .addTo(map);
+
+
+        // Commencer à suivre la position de l'utilisateur
+        startTracking();
+
+        // Charger les colis à proximité
+        loadNearbyPackages(longitude, latitude);
+    }
+
+    // Fonction pour commencer à suivre la position de l'utilisateur
+    function startTracking() {
+        if ("geolocation" in navigator) {
+            watchId = navigator.geolocation.watchPosition(updateUserPosition, handleLocationError, {
+                enableHighAccuracy: true,
+                timeout: 5000,
+                maximumAge: 0
+            });
+        }
+    }
+
+    // Fonction pour mettre à jour la position de l'utilisateur
+    function updateUserPosition(position) {
+        const { longitude, latitude } = position.coords;
+        userMarker.setLngLat([longitude, latitude]);
+        map.setCenter([longitude, latitude]);
+
+        // Recharger les colis à proximité
+        loadNearbyPackages(longitude, latitude);
+    }
+
+    // Fonction pour gérer les erreurs de géolocalisation
+    function handleLocationError(error) {
+        console.error("Erreur de géolocalisation : ", error);
+        alert("Impossible d'obtenir votre position. Veuillez vérifier vos paramètres de localisation.");
+    }
+
+    // Fonction pour charger les colis à proximité
+    async function loadNearbyPackages(longitude, latitude) {
+    try {
+        const response = await fetch(`/colis-proximite?latitude=${latitude}&longitude=${longitude}`);
+        const result = await response.json();
+
+        if (result.success) {
+            // Supprimer les anciens marqueurs de colis
+            document.querySelectorAll('.package-marker').forEach(el => el.remove());
+
+            // Ajouter les nouveaux marqueurs de colis
+            result.data.forEach(addPackageMarker);
+
+            // Mettre à jour la liste des missions disponibles
+            updateAvailableMissions(result.data);
+        }
+    } catch (error) {
+        console.error('Erreur lors du chargement des colis:', error);
+    }
+}
+
+    // Fonction pour ajouter un marqueur de colis sur la carte
+    function addPackageMarker(colis) {
+    const el = document.createElement('div');
+    el.className = 'package-marker';
+    el.style.backgroundImage = 'url(https://img.icons8.com/color/48/000000/box.png)';
+    el.style.width = '30px';
+    el.style.height = '30px';
+    el.style.backgroundSize = '100%';
+
+    el.addEventListener('click', () => showMissionDetails(colis));
+
+    new mapboxgl.Marker(el)
+        .setLngLat([colis.longitude, colis.latitude])
+        .addTo(map);
+}
+
+    // Fonction pour mettre à jour la liste des missions disponibles
+    function updateAvailableMissions(colis) {
+    const missionsContainer = document.getElementById('availableMissions');
+    missionsContainer.innerHTML = '';
+
+    colis.forEach(colis => {
+        const missionElement = document.createElement('div');
+        missionElement.className = 'border-b pb-4';
+        missionElement.innerHTML = `
+            <h3 class="font-medium">${colis.description}</h3>
+            <p class="text-sm text-gray-600">Destination: ${colis.destination} - Poids: ${colis.poids} kg</p>
+            <button onclick='showMissionDetails(${JSON.stringify(colis)})' class="mt-2 bg-coligo-blue text-white py-1 px-3 rounded-lg text-sm hover:bg-coligo-orange transition duration-300">
+                Voir détails
+            </button>
+        `;
+        missionsContainer.appendChild(missionElement);
+    });
+}
+
+    // Fonction pour afficher les détails d'une mission
+    function showMissionDetails(colis) {
+    const modal = document.getElementById('missionDetailsModal');
+    const detailsContainer = document.getElementById('missionDetails');
+    detailsContainer.innerHTML = `
+        <img src="/${colis.imgColis}" alt="Image du colis" class="w-full h-48 object-cover rounded-lg mb-4">
+        <h4 class="font-bold">${colis.description}</h4>
+        <p>Destination: ${colis.destination}</p>
+        <p>Poids: ${colis.poids} kg</p>
+        <p>Prix: ${colis.valeur} FCFA</p>
+        <p>Heure de départ: ${new Date(colis.heure_depart).toLocaleString()}</p>
+    `;
+    
+    modal.classList.remove('hidden');
+
+    document.getElementById('acceptMissionBtn').onclick = () => acceptMission(colis.id);
+    document.getElementById('closeMissionDetailsBtn').onclick = () => modal.classList.add('hidden');
+}
+
+    // Fonction pour accepter une mission
+    function acceptMission(missionId) {
+        // Simuler l'acceptation d'une mission (à remplacer par une vraie requête API)
+        alert(`Mission ${missionId} acceptée !`);
+        document.getElementById('missionDetailsModal').classList.add('hidden');
+        // Recharger les missions disponibles après acceptation
+        const { lng, lat } = userMarker.getLngLat();
+        loadNearbyPackages(lng, lat);
+    }
+
+    // Gestionnaire pour le bouton d'envoi de colis
+    document.getElementById('sendPackageBtn').addEventListener('click', () => {
+        document.getElementById('sendPackageModal').classList.remove('hidden');
+    });
+
+    // Gestionnaire pour le formulaire d'envoi de colis
+    document.getElementById('sendPackageForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    // Récupération des valeurs
+    const description = document.getElementById('packageDescription').value;
+    const destination = document.getElementById('packageDestination').value;
+    const weight = document.getElementById('packageWeight').value;
+    const departureTime = document.getElementById('packageDepartureTime').value;
+    const value = document.getElementById('deliveryPrice').value;
+    const packageImageInput = document.getElementById('packageImage');
+    const imageFile = packageImageInput ? packageImageInput.value : null
+
+    // Vérification du prix minimum
+    if (value < 500) {
+        alert("Le prix de livraison doit être supérieur ou égal à 500 FCFA.");
+        return;
+    }
+
+    try {
+        // Récupération de la position actuelle
+        const position = userMarker.getLngLat();
+        
+        // Création de l'objet FormData
+        const formData = new FormData();
+        formData.append('description', description);
+        formData.append('poids', weight);
+        formData.append('valeur', value);
+        formData.append('latitude', position.lat);
+        formData.append('longitude', position.lng);
+        formData.append('destination', destination);
+        formData.append('heure_depart', departureTime);
+        formData.append('image', imageFile);
+
+        // Envoi de la requête
+        const response = await fetch('/enregistrerColis', {
+            method: 'POST',
+            headers: {
+                'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                'Accept': 'application/json'
+            },
+            body: formData
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            alert('Colis enregistré avec succès !');
+            document.getElementById('sendPackageModal').classList.add('hidden');
+            // Recharger les colis à proximité
+            const { lng, lat } = userMarker.getLngLat();
+            loadNearbyPackages(lng, lat);
+        } else {
+            alert(result.message || 'Une erreur est survenue lors de l\'enregistrement du colis.');
+        }
+    } catch (error) {
+        console.error('Erreur:', error);
+        alert('Une erreur est survenue lors de l\'enregistrement du colis.');
+    }
+});
+
+
+    // Gestionnaire pour la recherche de missions
+    document.getElementById('searchMissions').addEventListener('input', (e) => {
+        const searchTerm = e.target.value.toLowerCase();
+        const missions = document.getElementById('availableMissions').children;
+        Array.from(missions).forEach(mission => {
+            const description = mission.querySelector('h3').textContent.toLowerCase();
+            if (description.includes(searchTerm)) {
+                mission.style.display = '';
+            } else {
+                mission.style.display = 'none';
+            }
+        });
+    });
+
+    // Fonction pour charger les activités récentes
+    function loadRecentActivities() {
+        const activities = [
+            { type: 'delivery', message: 'Colis livré à Yaoundé' },
+            { type: 'mission', message: 'Nouvelle mission acceptée' },
+            { type: 'payment', message: 'Paiement reçu pour la mission #1234' },
+        ];
+
+        const activitiesContainer = document.getElementById('recentActivities');
+        activitiesContainer.innerHTML = '';
+
+        activities.forEach(activity => {
+            const li = document.createElement('li');
+            li.className = 'flex items-center text-sm';
+            const dotColor = activity.type === 'delivery' ? 'bg-green-500' : activity.type === 'mission' ? 'bg-yellow-500' : 'bg-red-500';
+            li.innerHTML = `
+                <span class="w-4 h-4 rounded-full ${dotColor} mr-2"></span>
+                ${activity.message}
+            `;
+            activitiesContainer.appendChild(li);
+        });
+    }
+
+    // Fonction pour charger les statistiques de l'utilisateur
+    function loadUserStats() {
+        document.getElementById('sentPackages').textContent = '15';
+        document.getElementById('deliveredPackages').textContent = '12';
+        document.getElementById('averageRating').textContent = '4.8';
+        document.getElementById('totalEarnings').textContent = '250 FCFA';
+    }
+
+    // Initialiser la carte avec la géolocalisation
+    if ("geolocation" in navigator) {
+        navigator.geolocation.getCurrentPosition(function(position) {
+            const latitude  = position.coords.latitude;
+            const longitude = position.coords.longitude;
+            
+            // Initialiser la carte avec la position de l'utilisateur
+            initializeMap(longitude, latitude);
+        }, function(error) {
+            console.error("Erreur de géolocalisation : ", error);
+            // En cas d'erreur, utiliser une position par défaut (par exemple, Yaoundé)
+            initializeMap(11.5021, 3.8480);
+        });
+    } else {
+        console.log("La géolocalisation n'est pas supportée par ce navigateur.");
+        // Si la géolocalisation n'est pas supportée, utiliser une position par défaut
+        initializeMap(11.5021, 3.8480);
+    }
+
+    // Charger les données au chargement de la page
+    document.addEventListener('DOMContentLoaded', () => {
+        loadRecentActivities();
+        loadUserStats();
+    });
+</script>
+
+<!-- script pour la capture de l'image du colis -->
+
+<script>
+     // Capture d'image
+    /*const packageImagePreview = document.getElementById('packageImagePreview');
+    const packageImageInput = document.getElementById('packageImage');
+    const capturePackageImageButton = document.getElementById('capturePackageImage');
+
+    capturePackageImageButton.addEventListener('click', async () => {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { 
+                    facingMode: 'environment' // Utilise la caméra arrière
+                }, 
+                audio: false 
+            });
+            
+            // Nettoyer le contenu précédent
+            packageImagePreview.innerHTML = '';
+            
+            // Créer et configurer l'élément vidéo
+            const video = document.createElement('video');
+            video.srcObject = stream;
+            video.style.width = '100%';
+            video.style.height = '100%';
+            video.style.objectFit = 'cover';
+            video.play();
+
+            // Ajouter la vidéo au conteneur
+            packageImagePreview.appendChild(video);
+            
+            // Masquer le bouton "Prendre une photo"
+            capturePackageImageButton.style.display = 'none';
+
+            // Créer et configurer le bouton de capture
+            const captureButton = document.createElement('button');
+            captureButton.textContent = 'Capturer';
+            captureButton.className = 'absolute bottom-4 left-1/2 transform -translate-x-1/2 px-4 py-2 bg-coligo-blue text-white font-medium rounded-md shadow-sm hover:bg-coligo-orange focus:outline-none focus:ring-2 focus:ring-coligo-blue z-10';
+            packageImagePreview.appendChild(captureButton);
+
+            captureButton.addEventListener('click', () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                canvas.toBlob(blob => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                        packageImageInput.value = reader.result;
+                        
+                        // Afficher l'image capturée
+                        packageImagePreview.innerHTML = `<img src="${reader.result}" alt="Aperçu de l'image" class="w-full h-full object-cover">`;
+                        
+                        // Réafficher le bouton "Prendre une photo"
+                        capturePackageImageButton.style.display = 'block';
+                    };
+                    reader.readAsDataURL(blob);
+                }, 'image/jpeg');
+
+                // Arrêter la capture vidéo
+                stream.getTracks().forEach(track => track.stop());
+            });
+        } catch (error) {
+            console.error('Erreur lors de l\'accès à la caméra :', error);
+            alert('Impossible d\'accéder à la caméra. Veuillez vérifier les permissions et réessayer.');
+        }
+    });*/
+
+    // Capture d'image
+    const packageImagePreview = document.getElementById('packageImagePreview');
+    const packageImageInput = document.getElementById('packageImage');
+    const capturePackageImageButton = document.getElementById('capturePackageImage');
+
+    capturePackageImageButton.addEventListener('click', async () => {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { 
+                    facingMode: 'environment' // Utilise la caméra arrière
+                }, 
+                audio: false 
+            });
+            
+            // Nettoyer le contenu précédent
+            packageImagePreview.innerHTML = '';
+            
+            // Créer et configurer l'élément vidéo
+            const video = document.createElement('video');
+            video.srcObject = stream;
+            video.style.width = '100%';
+            video.style.height = '100%';
+            video.style.objectFit = 'cover';
+            video.play();
+
+            // Ajouter la vidéo au conteneur
+            packageImagePreview.appendChild(video);
+            
+            // Masquer le bouton "Prendre une photo"
+            capturePackageImageButton.style.display = 'none';
+
+            // Créer et configurer le bouton de capture
+            const captureButton = document.createElement('button');
+            captureButton.textContent = 'Capturer';
+            captureButton.className = 'absolute bottom-4 left-1/2 transform -translate-x-1/2 px-4 py-2 bg-coligo-blue text-white font-medium rounded-md shadow-sm hover:bg-coligo-orange focus:outline-none focus:ring-2 focus:ring-coligo-blue z-10';
+            packageImagePreview.appendChild(captureButton);
+
+            captureButton.addEventListener('click', () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                canvas.toBlob(blob => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                        packageImageInput.value = reader.result;
+                        
+                        // Afficher l'image capturée
+                        packageImagePreview.innerHTML = `<img src="${reader.result}" alt="Aperçu de l'image" class="w-full h-full object-cover">`;
+                        
+                        // Réafficher le bouton "Prendre une photo"
+                        capturePackageImageButton.style.display = 'block';
+                    };
+                    reader.readAsDataURL(blob);
+                }, 'image/jpeg');
+
+                // Arrêter la capture vidéo
+                stream.getTracks().forEach(track => track.stop());
+            });
+        } catch (error) {
+            console.error('Erreur lors de l\'accès à la caméra :', error);
+            alert('Impossible d\'accéder à la caméra. Veuillez vérifier les permissions et réessayer.');
+        }
+    });
+
+    // Fonction pour convertir une image en base64
+    function convertToBase64(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = error => reject(error);
+        });
+    }
+
+    // Gestionnaire pour le formulaire d'envoi de colis
+    document.getElementById('sendPackageForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
+        // Récupération des valeurs
+        const formData = new FormData(e.target);
+        
+        // Ajout de la position actuelle
+        const position = userMarker.getLngLat();
+        formData.append('latitude', position.lat);
+        formData.append('longitude', position.lng);
+
+        // Conversion de l'image en base64
+        const imageFile = document.getElementById('packageImage').files[0];
+        if (imageFile) {
+            formData.append('imgColis', imageFile);
+        }
+        try {
+            // Envoi de la requête
+            const response = await fetch('/enregistrerColis', {
+                method: 'POST',
+                headers: {
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content,
+                    'Accept': 'application/json'
+                },
+                body: formData
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                alert('Colis enregistré avec succès !');
+                document.getElementById('sendPackageModal').classList.add('hidden');
+                // Recharger les colis à proximité
+                loadNearbyPackages(position.lng, position.lat);
+            } else {
+                alert(result.message || 'Une erreur est survenue lors de l\'enregistrement du colis.');
+            }
+        } catch (error) {
+            console.error('Erreur:', error);
+            alert('Une erreur est survenue lors de l\'enregistrement du colis.');
+        }
+    });
+    // ajout de l'enregistrement  //
+
+    
+</script>
+@endsection

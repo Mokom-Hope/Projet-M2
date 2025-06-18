@@ -1,0 +1,598 @@
+<?php
+
+namespace App\Http\Controllers\Immo;
+
+use App\Http\Controllers\Controller;
+use Illuminate\Http\Request;
+use App\Models\Bien;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
+
+class ImmoController extends Controller
+{
+    /**
+     * Traite les messages du chatbot immobilier
+     */
+    public function processMessage(Request $request)
+    {
+        $message = trim($request->input('message'));
+        $name = $request->input('name', 'Client');
+        $sessionId = $request->input('session_id', md5($request->ip()));
+
+        // Si c'est une salutation ou une question sur l'identité du bot
+        if ($this->isGreetingOrIdentityQuestion($message)) {
+            return response()->json([
+                'reply' => "Bonjour ! Je suis Immo, votre assistant immobilier virtuel. Je peux vous aider à trouver des biens immobiliers, vous donner des conseils sur l'investissement, et répondre à vos questions sur le marché immobilier au Cameroun. Comment puis-je vous aider aujourd'hui ?"
+            ]);
+        }
+
+        // Vérifier si c'est une question générale sur l'immobilier
+        if ($this->isGeneralRealEstateQuestion($message)) {
+            return $this->handleGeneralQuestion($message, $name, $sessionId);
+        }
+        
+        // Analyse du message pour extraire les informations clés
+        $extractedInfo = $this->extractInformation($message);
+        
+        // Recherche de biens correspondants
+        $properties = $this->findMatchingProperties($extractedInfo);
+        
+        // Si des biens sont trouvés, construire la réponse avec les biens
+        if (!$properties->isEmpty()) {
+            return $this->buildResponse($properties, $extractedInfo, $name, $sessionId);
+        }
+        
+        // Si aucun bien n'est trouvé mais que c'est une demande de bien
+        if ($this->isPropertyRequest($message)) {
+            // Suggérer des alternatives
+            $suggestions = $this->suggestAlternatives($extractedInfo);
+            return response()->json([
+                'reply' => "Je n'ai pas trouvé de biens correspondant exactement à vos critères. " . $suggestions
+            ]);
+        }
+        
+        // Si ce n'est ni une question générale ni une demande de bien reconnue
+        // Essayer de donner une réponse pertinente basée sur le contenu du message
+        return $this->handleGeneralQuestion($message, $name, $sessionId);
+    }
+    
+    /**
+     * Extrait les informations clés du message utilisateur
+     */
+    private function extractInformation($message)
+    {
+        $lowerMessage = strtolower($message);
+        $info = [
+            'budget' => null,
+            'type' => null,
+            'transaction' => 'vente',
+            'location' => null,
+            'superficie' => null,
+            'purpose' => null,
+        ];
+        
+        // Extraction du budget
+        if (preg_match('/budget(?:\s*[:=]?\s*)(\d+[\s\d]*)/i', $message, $matchBudget)) {
+            $info['budget'] = (float) preg_replace('/\s+/', '', $matchBudget[1]);
+        } elseif (preg_match('/(\d+[\s\d]*)\s*(fcfa|f|xaf)/i', $message, $matchBudget)) {
+            $info['budget'] = (float) preg_replace('/\s+/', '', $matchBudget[1]);
+        }
+        
+        // Extraction du type de bien
+        $typesMapping = [
+            'maison' => 'Maison',
+            'terrain' => 'Terrain',
+            'local commercial' => 'LocalCommercial',
+            'local' => 'LocalCommercial',
+            'studio' => 'Studio',
+            'chambre' => 'Chambre',
+            'meublé' => 'Meublé',
+            'meuble' => 'Meublé',
+            'hotel' => 'Hotel',
+            'hôtel' => 'Hotel',
+            'appartement' => 'Maison', // Considéré comme une maison dans votre schéma
+        ];
+        
+        foreach ($typesMapping as $keyword => $type) {
+            if (strpos($lowerMessage, $keyword) !== false) {
+                $info['type'] = $type;
+                break;
+            }
+        }
+        
+        // Extraction du type de transaction
+        if (preg_match('/(louer|location|locat)/i', $message)) {
+            $info['transaction'] = 'location';
+        } elseif (preg_match('/(achat|acheter|vente|achète|acheteur)/i', $message)) {
+            $info['transaction'] = 'vente';
+        }
+        
+        // Extraction de la localisation
+        $locations = ['yaoundé', 'douala', 'bafoussam', 'kribi', 'limbé', 'garoua', 'maroua', 
+                      'centre-ville', 'mokolo', 'nsam', 'mvan', 'dragage', 'bastos', 'mfandena'];
+        
+        foreach ($locations as $loc) {
+            if (strpos($lowerMessage, strtolower($loc)) !== false) {
+                $info['location'] = $loc;
+                break;
+            }
+        }
+        
+        // Extraction de la superficie
+        if (preg_match('/(\d+)\s*m(?:ètres?)?(?:\s*carrés?)?(?:\s*²)?/i', $message, $matchSuperficie)) {
+            $info['superficie'] = (float) $matchSuperficie[1];
+        } elseif (preg_match('/superficie(?:\s*[:=]?\s*)(\d+)/i', $message, $matchSuperficie)) {
+            $info['superficie'] = (float) $matchSuperficie[1];
+        }
+        
+        // Extraction de l'objectif/projet
+        $purposes = [
+            'habitation' => 'résidentiel',
+            'résidence' => 'résidentiel',
+            'vivre' => 'résidentiel',
+            'habiter' => 'résidentiel',
+            'commerce' => 'commercial',
+            'commercial' => 'commercial',
+            'business' => 'commercial',
+            'magasin' => 'commercial',
+            'boutique' => 'commercial',
+            'bureau' => 'bureau',
+            'investissement' => 'investissement',
+            'investir' => 'investissement',
+            'rendement' => 'investissement',
+            'agriculture' => 'agricole',
+            'agricole' => 'agricole',
+            'ferme' => 'agricole',
+            'cultiver' => 'agricole',
+        ];
+        
+        foreach ($purposes as $keyword => $purpose) {
+            if (strpos($lowerMessage, $keyword) !== false) {
+                $info['purpose'] = $purpose;
+                break;
+            }
+        }
+        
+        return $info;
+    }
+    
+    /**
+     * Détermine si le message est une question générale sur l'immobilier
+     */
+    private function isGeneralRealEstateQuestion($message)
+    {
+        $lowerMessage = strtolower($message);
+        
+        // Mots-clés indiquant une question générale
+        $generalKeywords = [
+            'comment', 'qu\'est-ce que', 'qu\'est ce que', 'quels sont', 'quelles sont',
+            'pourquoi', 'expliquer', 'conseils', 'conseil', 'avis', 'recommandation',
+            'meilleur moment', 'meilleure période', 'investir dans', 'investissement',
+            'rentabilité', 'rendement', 'fiscalité', 'impôts', 'taxe', 'taxes',
+            'prêt immobilier', 'crédit', 'hypothèque', 'notaire', 'frais', 'tendance',
+            'marché immobilier', 'prix au m2', 'prix au mètre carré', 'évolution des prix',
+            'que pense', 'penses-tu', 'pense tu', 'opinion', 'avis', '2025', '2024', 'futur',
+            'prévision', 'tendance', 'évolution', 'zone', 'meilleure zone', 'meilleur quartier'
+        ];
+        
+        foreach ($generalKeywords as $keyword) {
+            if (strpos($lowerMessage, $keyword) !== false) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Gère les questions générales sur l'immobilier
+     */
+    private function handleGeneralQuestion($message, $name, $sessionId)
+    {
+        // Vérifier si la réponse est en cache pour éviter de surcharger l'API
+        $cacheKey = 'immo_qa_' . md5($message);
+        if (Cache::has($cacheKey)) {
+            return response()->json(['reply' => Cache::get($cacheKey)]);
+        }
+        
+        try {
+            // Utiliser l'API LLama.cpp (ou autre modèle open source)
+            $response = $this->getAIResponse($message, $name);
+            
+            // Mettre en cache la réponse (1 heure)
+            Cache::put($cacheKey, $response, 3600);
+            
+            return response()->json(['reply' => $response]);
+        } catch (\Exception $e) {
+            Log::error('Erreur lors de la génération de réponse IA: ' . $e->getMessage());
+            
+            // Réponse de secours
+            $fallbackResponse = $this->getFallbackResponse($message, $name);
+            return response()->json(['reply' => $fallbackResponse]);
+        }
+    }
+    
+    /**
+     * Obtient une réponse de l'IA pour les questions générales
+     */
+    private function getAIResponse($message, $name)
+    {
+        // Option 1: Utiliser Ollama (modèle local open source)
+        try {
+            $response = Http::timeout(10)->post(env('OLLAMA_ENDPOINT', 'http://localhost:11434/api/generate'), [
+                'model' => 'llama2',
+                'prompt' => $this->buildPrompt($message, $name),
+                'stream' => false
+            ]);
+            
+            if ($response->successful()) {
+                return $response->json('response');
+            }
+        } catch (\Exception $e) {
+            Log::warning('Erreur Ollama: ' . $e->getMessage());
+        }
+        
+        // Option 2: Utiliser l'API Hugging Face (gratuite avec limites)
+        try {
+            $response = Http::timeout(10)
+                ->withHeaders([
+                    'Authorization' => 'Bearer ' . env('HUGGINGFACE_API_KEY', ''),
+                    'Content-Type' => 'application/json'
+                ])
+                ->post('https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2', [
+                    'inputs' => $this->buildPrompt($message, $name),
+                    'parameters' => [
+                        'max_new_tokens' => 500,
+                        'temperature' => 0.7
+                    ]
+                ]);
+            
+            if ($response->successful()) {
+                return $response->json()[0]['generated_text'];
+            }
+        } catch (\Exception $e) {
+            Log::warning('Erreur Hugging Face: ' . $e->getMessage());
+        }
+        
+        // Si toutes les options échouent, utiliser la réponse de secours
+        return $this->getFallbackResponse($message, $name);
+    }
+    
+    /**
+     * Construit le prompt pour l'IA
+     */
+    private function buildPrompt($message, $name)
+    {
+        return <<<EOT
+Tu es Immo, un assistant virtuel spécialisé dans l'immobilier au Cameroun. Tu dois répondre de manière professionnelle, précise et utile à toutes les questions immobilières.
+
+Contexte: Tu parles à $name qui te pose la question suivante: "$message"
+
+Réponds uniquement aux questions liées à l'immobilier. Si la question n'est pas liée à l'immobilier, indique poliment que tu es spécialisé dans l'immobilier et propose de l'aide sur ce sujet.
+
+Utilise ces informations sur le marché immobilier camerounais:
+- Les prix au m² varient considérablement selon les villes et quartiers
+- À Yaoundé et Douala, les prix des terrains oscillent entre 15 000 et 150 000 FCFA/m² selon l'emplacement
+- Les quartiers haut de gamme comme Bastos à Yaoundé ou Bonanjo à Douala sont les plus chers
+- Le rendement locatif moyen est de 8-12% brut annuel
+- Les frais de notaire représentent environ 7-9% du prix d'achat
+- Le marché est principalement informel avec peu d'agences immobilières professionnelles
+- L'obtention d'un titre foncier est cruciale mais parfois complexe
+
+Réponds de manière concise, informative et professionnelle.
+EOT;
+    }
+    
+    /**
+     * Fournit une réponse de secours basée sur des modèles prédéfinis
+     */
+    private function getFallbackResponse($message, $name)
+    {
+        $lowerMessage = strtolower($message);
+        
+        // Réponses prédéfinies pour les questions courantes
+        $commonResponses = [
+            'investissement' => "L'investissement immobilier au Cameroun peut être très rentable avec des rendements locatifs entre 8% et 12% brut annuel. Je vous conseille de privilégier les grandes villes comme Yaoundé et Douala, ou les zones touristiques comme Kribi. Assurez-vous toujours d'obtenir un titre foncier en bonne et due forme pour sécuriser votre investissement.",
+        
+            'prix' => "Les prix immobiliers au Cameroun varient considérablement selon la localisation. À Yaoundé et Douala, comptez entre 15 000 et 150 000 FCFA/m² pour un terrain selon le quartier. Les appartements se vendent entre 250 000 et 600 000 FCFA/m². Les quartiers comme Bastos (Yaoundé) ou Bonanjo (Douala) sont les plus chers du marché.",
+        
+            'titre foncier' => "L'obtention d'un titre foncier au Cameroun implique plusieurs étapes: demande auprès du ministère des Domaines, bornage par un géomètre assermenté, publication au Journal Officiel, et enregistrement final. Le processus peut prendre 6 mois à 2 ans et coûter entre 7% et 15% de la valeur du terrain. C'est néanmoins indispensable pour sécuriser votre propriété.",
+        
+            'location' => "Pour la location immobilière au Cameroun, prévoyez généralement 2-3 mois de caution et un mois de loyer d'avance. Un bail écrit est fortement recommandé même si les arrangements informels sont courants. Les charges (eau, électricité) sont généralement à la charge du locataire. Le rendement locatif moyen est de 8-12% brut annuel.",
+        
+            'construction' => "Pour construire au Cameroun, vous aurez besoin d'un permis de construire délivré par la mairie (comptez 1-3 mois). Le coût de construction varie entre 150 000 et 350 000 FCFA/m² selon la qualité des finitions. Je vous recommande de travailler avec un architecte agréé et d'établir des contrats clairs avec les entrepreneurs.",
+        
+            '2025' => "Pour l'immobilier au Cameroun en 2025, les experts prévoient une croissance soutenue du marché, particulièrement dans les grandes villes comme Yaoundé et Douala. Les zones en développement comme Kribi (avec son port en pleine expansion) et Limbé (pour le tourisme) offrent d'excellentes opportunités d'investissement. Pour un hôtel, je recommanderais d'explorer les quartiers touristiques de Kribi, les zones d'affaires de Douala (Akwa, Bonanjo) ou les quartiers résidentiels haut de gamme de Yaoundé comme Bastos ou Golf. Ces zones attirent une clientèle à fort pouvoir d'achat et des expatriés, idéals pour un établissement hôtelier.",
+        
+            'hotel' => "Pour construire un hôtel au Cameroun, les meilleures zones sont Kribi (tourisme balnéaire en plein essor), Limbé (tourisme), le centre de Douala (quartiers Akwa et Bonanjo pour la clientèle d'affaires), et Yaoundé (quartiers Bastos, Golf ou Centre-ville). Assurez-vous d'obtenir un terrain avec titre foncier et toutes les autorisations nécessaires. Le coût de construction d'un hôtel varie entre 400 000 et 800 000 FCFA/m² selon le standing. Le retour sur investissement moyen est de 5 à 8 ans pour un établissement bien géré.",
+        
+            'zone' => "Les zones les plus prometteuses pour l'investissement immobilier au Cameroun actuellement sont: Kribi (développement portuaire), Douala (quartiers Bonapriso, Bonanjo et Akwa), Yaoundé (Bastos, Golf, Dragage), et Limbé (tourisme). Pour un investissement locatif, privilégiez les quartiers proches des centres d'affaires ou des universités. Pour la construction d'un hôtel spécifiquement, Kribi offre un excellent potentiel touristique, tandis que les centres de Douala et Yaoundé sont idéaux pour la clientèle d'affaires."
+        ];
+        
+        // Rechercher des mots-clés dans le message
+        foreach ($commonResponses as $keyword => $response) {
+            if (strpos($lowerMessage, $keyword) !== false) {
+                return $response;
+            }
+        }
+        
+        // Réponse par défaut si aucun mot-clé n'est trouvé
+        return "Merci pour votre question sur l'immobilier. Pour vous donner une réponse plus précise, pourriez-vous me donner plus de détails sur ce que vous recherchez exactement ? Par exemple, êtes-vous intéressé par l'achat, la location, l'investissement ou la construction ?";
+    }
+    
+    /**
+     * Recherche des biens correspondant aux critères extraits
+     */
+    private function findMatchingProperties($criteria)
+    {
+        try {
+            // Commencer avec une requête de base
+            $query = Bien::where('statut', 'Disponible');
+            
+            // Appliquer le filtre de transaction seulement si spécifié
+            if ($criteria['transaction']) {
+                $query->where('transaction_type', $criteria['transaction']);
+            }
+            
+            // Appliquer le filtre de type seulement si spécifié
+            if ($criteria['type']) {
+                $query->where('type', $criteria['type']);
+            }
+            
+            // Appliquer le filtre de budget avec une marge plus large
+            if ($criteria['budget']) {
+                // Marge de ±30% sur le budget pour trouver plus de résultats
+                $minPrice = $criteria['budget'] * 0.7;
+                $maxPrice = $criteria['budget'] * 1.3;
+                $query->whereBetween('prix', [$minPrice, $maxPrice]);
+            }
+            
+            // Appliquer le filtre de localisation
+            if ($criteria['location']) {
+                $query->where(function($q) use ($criteria) {
+                    $q->where('adresse', 'like', '%' . $criteria['location'] . '%')
+                      ->orWhere('description', 'like', '%' . $criteria['location'] . '%')
+                      ->orWhere('titre', 'like', '%' . $criteria['location'] . '%');
+                });
+            }
+            
+            // Appliquer le filtre de superficie
+            if ($criteria['superficie']) {
+                // Marge de ±20% sur la superficie
+                $minArea = $criteria['superficie'] * 0.8;
+                $maxArea = $criteria['superficie'] * 1.2;
+                $query->whereBetween('superficie', [$minArea, $maxArea]);
+            }
+            
+            // Tri par pertinence
+            $query->orderBy('prix', 'asc');
+            
+            // Récupérer les résultats
+            $results = $query->take(5)->get();
+            
+            // Si aucun résultat, essayer une recherche plus souple
+            if ($results->isEmpty() && ($criteria['type'] || $criteria['budget'] || $criteria['location'])) {
+                // Nouvelle requête plus souple
+                $looseQuery = Bien::where('statut', 'Disponible');
+                
+                // Garder seulement un critère pour élargir la recherche
+                if ($criteria['type']) {
+                    $looseQuery->where('type', $criteria['type']);
+                } elseif ($criteria['location']) {
+                    $looseQuery->where(function($q) use ($criteria) {
+                        $q->where('adresse', 'like', '%' . $criteria['location'] . '%')
+                          ->orWhere('description', 'like', '%' . $criteria['location'] . '%')
+                          ->orWhere('titre', 'like', '%' . $criteria['location'] . '%');
+                    });
+                } elseif ($criteria['budget']) {
+                    // Marge de ±50% sur le budget
+                    $minPrice = $criteria['budget'] * 0.5;
+                    $maxPrice = $criteria['budget'] * 1.5;
+                    $looseQuery->whereBetween('prix', [$minPrice, $maxPrice]);
+                }
+                
+                $results = $looseQuery->take(5)->get();
+            }
+            
+            return $results;
+        } catch (\Exception $e) {
+            Log::error('Erreur lors de la recherche de biens: ' . $e->getMessage());
+            return collect(); // Retourner une collection vide en cas d'erreur
+        }
+    }
+    
+    /**
+     * Construit la réponse finale avec les biens trouvés
+     */
+    private function buildResponse($properties, $criteria, $name, $sessionId)
+    {
+        // Si aucun bien n'est trouvé
+        if ($properties->isEmpty()) {
+            // Enregistrer la recherche infructueuse pour amélioration future
+            $this->logSearchQuery($criteria, $sessionId, 0);
+            
+            // Suggérer d'élargir les critères
+            $suggestions = $this->suggestAlternatives($criteria);
+            
+            return response()->json([
+                'reply' => "Bonjour, je n'ai pas trouvé de biens correspondant exactement à vos critères. " . $suggestions
+            ]);
+        }
+        
+        // Enregistrer la recherche réussie
+        $this->logSearchQuery($criteria, $sessionId, count($properties));
+        
+        // Construction de la réponse avec les biens trouvés
+        $reply = "Bonjour, j'ai trouvé " . count($properties) . " bien" . (count($properties) > 1 ? "s" : "") . " qui pourrai" . (count($properties) > 1 ? "ent" : "t") . " vous intéresser :<br><br>";
+        
+        foreach ($properties as $index => $bien) {
+            $propertyUrl = route('properties.show', ['id' => $bien->id]);
+            
+            // Ajouter un badge "Meilleure offre" pour le premier bien
+            $badgeHtml = ($index === 0) ? '<span class="inline-block bg-green-100 text-green-800 px-2 py-1 text-xs font-semibold rounded">Meilleure offre</span> ' : '';
+            
+            $reply .= "<div class='mb-4 p-3 border border-gray-200 rounded-lg'>";
+            $reply .= "{$badgeHtml}<strong class='text-lg'>{$bien->titre}</strong> ({$bien->type})<br>";
+            $reply .= "<span class='text-gray-700'>Prix : " . number_format($bien->prix, 0, ',', ' ') . " FCFA | Superficie : {$bien->superficie} m²</span><br>";
+            
+            // Ajouter des détails pertinents de la description
+            $shortDesc = substr($bien->description, 0, 120) . (strlen($bien->description) > 120 ? '...' : '');
+            $reply .= "<p class='my-2'>{$shortDesc}</p>";
+            
+            // Ajouter des avantages spécifiques selon le type de bien
+            $reply .= $this->getPropertyAdvantages($bien);
+            
+            $reply .= "<div class='mt-2'><a href='{$propertyUrl}' target='_blank' class='inline-block bg-black text-white px-4 py-2 rounded hover:bg-gray-800 transition'>Voir ce bien</a></div>";
+            $reply .= "</div>";
+        }
+        
+        // Ajouter une question de suivi pour maintenir la conversation
+        $reply .= $this->getFollowUpQuestion($criteria);
+        
+        return response()->json(['reply' => $reply]);
+    }
+    
+    /**
+     * Génère des avantages spécifiques selon le type de bien
+     */
+    private function getPropertyAdvantages($bien)
+    {
+        $advantages = "<ul class='list-disc pl-5 my-2 text-sm'>";
+        
+        switch ($bien->type) {
+            case 'Maison':
+                $advantages .= "<li>Excellent emplacement dans le quartier</li>";
+                $advantages .= "<li>Sécurité 24h/24</li>";
+                break;
+                
+            case 'Terrain':
+                $advantages .= "<li>Terrain plat, facile à construire</li>";
+                $advantages .= "<li>Titre foncier disponible</li>";
+                break;
+                
+            case 'LocalCommercial':
+                $advantages .= "<li>Fort passage commercial</li>";
+                $advantages .= "<li>Visibilité exceptionnelle</li>";
+                break;
+                
+            case 'Studio':
+            case 'Chambre':
+            case 'Meublé':
+                $advantages .= "<li>Proche des commodités</li>";
+                $advantages .= "<li>Quartier calme et sécurisé</li>";
+                break;
+                
+            case 'Hotel':
+                $advantages .= "<li>Potentiel de rendement élevé</li>";
+                $advantages .= "<li>Clientèle existante</li>";
+                break;
+        }
+        
+        $advantages .= "</ul>";
+        return $advantages;
+    }
+    
+    /**
+     * Génère une question de suivi pour maintenir la conversation
+     */
+    private function getFollowUpQuestion($criteria)
+    {
+        $questions = [
+            "Ces biens correspondent-ils à vos attentes ? Je peux affiner la recherche selon vos préférences.",
+            "Souhaitez-vous des informations supplémentaires sur l'un de ces biens ?",
+            "Avez-vous une préférence particulière concernant le quartier ?",
+            "Quel est votre calendrier pour ce projet immobilier ?",
+            "Préférez-vous organiser une visite physique ou virtuelle pour l'un de ces biens ?"
+        ];
+        
+        return "<p class='mt-3'>" . $questions[array_rand($questions)] . "</p>";
+    }
+    
+    /**
+     * Suggère des alternatives quand aucun bien ne correspond
+     */
+    private function suggestAlternatives($criteria)
+    {
+        $suggestions = "Voici quelques suggestions pour élargir votre recherche :<br><ul class='list-disc pl-5 my-2'>";
+        
+        if ($criteria['budget']) {
+            $suggestions .= "<li>Augmenter votre budget d'environ 20% pourrait vous donner accès à plus d'options</li>";
+        }
+        
+        if ($criteria['type']) {
+            $suggestions .= "<li>Envisager d'autres types de biens similaires pourrait être intéressant</li>";
+        }
+        
+        if ($criteria['location']) {
+            $suggestions .= "<li>Explorer les quartiers voisins qui offrent souvent un meilleur rapport qualité-prix</li>";
+        }
+        
+        $suggestions .= "</ul><br>Souhaitez-vous que je vous propose des alternatives spécifiques ?";
+        
+        return $suggestions;
+    }
+    
+    /**
+     * Enregistre les requêtes de recherche pour amélioration future
+     */
+    private function logSearchQuery($criteria, $sessionId, $resultCount)
+    {
+        // Cette fonction pourrait enregistrer les recherches dans une table dédiée
+        // pour analyser les tendances et améliorer les réponses futures
+        
+        // Exemple simplifié avec Log
+        Log::info('Recherche immobilière', [
+            'session_id' => $sessionId,
+            'criteria' => $criteria,
+            'result_count' => $resultCount,
+            'timestamp' => now()
+        ]);
+        
+        // Idéalement, vous créeriez une table SearchLog pour stocker ces informations
+    }
+
+    /**
+     * Vérifie si le message est une salutation ou une question sur l'identité du bot
+     */
+    private function isGreetingOrIdentityQuestion($message)
+    {
+        $lowerMessage = strtolower($message);
+        $patterns = [
+            '/^(salut|bonjour|bonsoir|hello|hi|hey|coucou)/',
+            '/(comment tu t\'appelles|qui es[ -]tu|c\'est quoi ton nom|quel est ton nom|tu es qui|t\'es qui|qui êtes[ -]vous)/',
+            '/(que fais[ -]tu|que faites[ -]vous|à quoi sers[ -]tu|que peux[ -]tu faire|peux[ -]tu m\'aider)/'
+        ];
+        
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $lowerMessage)) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    /**
+     * Vérifie si le message est une demande de bien immobilier
+     */
+    private function isPropertyRequest($message)
+    {
+        $lowerMessage = strtolower($message);
+        $patterns = [
+            '/(cherche|recherche|veux|aimerais|souhaite)\s+(un|une|des)\s+(maison|terrain|appartement|studio|local|chambre|meublé|hotel)/',
+            '/(acheter|louer|acquérir)\s+(un|une|des)\s+(maison|terrain|appartement|studio|local|chambre|meublé|hotel)/',
+            '/budget\s+de\s+\d+/',
+            '/\d+\s+(fcfa|f|xaf)/',
+            '/(maison|terrain|appartement|studio|local|chambre|meublé|hotel)\s+(à|a)\s+(vendre|louer)/'
+        ];
+        
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $lowerMessage)) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+}
